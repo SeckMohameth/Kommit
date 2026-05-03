@@ -1,9 +1,10 @@
 import SwiftUI
 import AVFoundation
+import Combine
 
 // MARK: - Theme
 
-enum CommitTheme {
+enum KommitTheme {
     static let background = Color(hex: "050914")
     static let cardPrimary = Color(hex: "111827")
     static let cardSecondary = Color(hex: "151A24")
@@ -45,9 +46,16 @@ struct Brand: Identifiable {
     let imageName: String?
 }
 
+struct SpendingAccount: Identifiable {
+    let id = UUID()
+    let name: String
+    let imageName: String?
+}
+
 enum DemoStep: Int, CaseIterable {
     case welcome
     case onboarding
+    case initialReflection
     case budgetSetup
     case partners
     case plaid
@@ -67,7 +75,8 @@ final class DemoStore: ObservableObject {
     @Published var step: DemoStep = .welcome
     @Published var onboardingSelections: [String: String] = [:]
     @Published var selectedPartners: Set<Partner> = []
-    @Published var socialTaxPercent: Double = 3
+    @Published var socialTaxPool: Double = 30
+    @Published var selectedAlertThresholds: Set<Int> = [25, 50, 75, 90]
     @Published var plaidProgress: [String] = []
     @Published var isPlaidConnecting = false
     @Published var aiProgress: [String] = []
@@ -76,6 +85,7 @@ final class DemoStore: ObservableObject {
     @Published var recordingSeconds = 0
     @Published var showBanner = false
     @Published var bannerText = ""
+    @Published var showMonthEndPayoutAnimation = false
 
     let categories: [BudgetCategory] = [
         .init(name: "Food", spent: 410, limit: 450, symbol: "fork.knife"),
@@ -86,20 +96,43 @@ final class DemoStore: ObservableObject {
     ]
 
     let partners: [Partner] = [
-        .init(name: "Maya", imageName: "maya"),
-        .init(name: "Jordan", imageName: "jordan"),
-        .init(name: "Aaliyah", imageName: "aaliyah"),
-        .init(name: "Chris", imageName: "chris"),
+        .init(name: "Maya", imageName: "profile-image-1"),
+        .init(name: "Jordan", imageName: "profile-image-2"),
+        .init(name: "Aaliyah", imageName: nil),
+        .init(name: "Chris", imageName: nil),
         .init(name: "Mom", imageName: "mom")
     ]
 
     let brands: [Brand] = [
-        .init(name: "Apple", symbol: "apple.logo", imageName: "apple"),
-        .init(name: "Nike", symbol: "shoe.2", imageName: "nike"),
-        .init(name: "AMC", symbol: "ticket", imageName: "amc"),
-        .init(name: "Starbucks", symbol: "cup.and.saucer", imageName: "starbucks"),
-        .init(name: "OpenAI", symbol: "sparkles", imageName: "openai")
+        .init(name: "Apple", symbol: "apple.logo", imageName: "Apple_logo"),
+        .init(name: "Nike", symbol: "shoe.2", imageName: "Nike-Logo"),
+        .init(name: "Adidas", symbol: "figure.run", imageName: "Adidas-Logo"),
+        .init(name: "H&M", symbol: "bag", imageName: "H&M-Logo"),
+        .init(name: "Netflix", symbol: "play.rectangle", imageName: "netflix_logo")
     ]
+
+    let accounts: [SpendingAccount] = [
+        .init(name: "Chase Checking ****2049", imageName: "Chase-Logo"),
+        .init(name: "Apple Card ****4556", imageName: "Apple_logo"),
+        .init(name: "Cash App Card ****9912", imageName: "Bank-of-America-Logo")
+    ]
+
+    var perPartnerPayout: Double {
+        let count = max(selectedPartners.count, 1)
+        return socialTaxPool / Double(count)
+    }
+
+    var shoppingTaxBucket: Double {
+        36.45
+    }
+
+    var partnerPayoutIfGoalMissed: Double {
+        shoppingTaxBucket + socialTaxPool
+    }
+
+    var lastAlertThreshold: Int {
+        selectedAlertThresholds.max() ?? 90
+    }
 
     func next() {
         guard let next = DemoStep(rawValue: step.rawValue + 1) else { return }
@@ -139,7 +172,9 @@ final class DemoStore: ObservableObject {
                 plaidProgress.append(item)
             }
             isPlaidConnecting = false
-            next()
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                step = .budgetSetup
+            }
         }
     }
 
@@ -192,12 +227,26 @@ final class DemoStore: ObservableObject {
             showBanner = false
         }
     }
+
+    func triggerMissedBudgetGoalNotification() {
+        bannerText = "Month-end: You missed your Shopping budget goal"
+        showBanner = true
+        showMonthEndPayoutAnimation = true
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            showBanner = false
+            try? await Task.sleep(for: .milliseconds(700))
+            showMonthEndPayoutAnimation = false
+        }
+    }
 }
 
 // MARK: - Root View
 
 struct ContentView: View {
     @StateObject private var store = DemoStore()
+    @State private var animateMonthEndPayout = false
 
     var body: some View {
         ZStack {
@@ -208,6 +257,7 @@ struct ContentView: View {
                 switch store.step {
                 case .welcome: WelcomeScreen(store: store)
                 case .onboarding: OnboardingScreen(store: store)
+                case .initialReflection: InitialReflectionScreen(store: store)
                 case .budgetSetup: BudgetSetupScreen(store: store)
                 case .partners: PartnersScreen(store: store)
                 case .plaid: MockPlaidScreen(store: store)
@@ -220,7 +270,8 @@ struct ContentView: View {
                 case .earnedSummary: EarnedSummaryScreen(store: store)
                 }
             }
-            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
+            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+            .animation(.spring(response: 0.58, dampingFraction: 0.88), value: store.step)
 
             if store.showBanner {
                 VStack {
@@ -230,8 +281,44 @@ struct ContentView: View {
                 .padding(.top, 12)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
+
+            if store.showMonthEndPayoutAnimation {
+                ZStack {
+                    Color.black.opacity(0.66).ignoresSafeArea()
+                    VStack(spacing: 16) {
+                        Text("Missed Goal Payout")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("$30 social tax pool sent to accountability partners")
+                            .foregroundStyle(.white.opacity(0.85))
+                        PartnerMoneyFlightView(
+                            partners: payoutPartners,
+                            animate: animateMonthEndPayout
+                        )
+                        .frame(height: 190)
+                    }
+                    .padding(24)
+                    .background(RoundedRectangle(cornerRadius: 24).fill(KommitTheme.cardPrimary.opacity(0.96)))
+                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(KommitTheme.warning, lineWidth: 1.2))
+                    .padding(.horizontal, 20)
+                }
+                .transition(.opacity.combined(with: .scale))
+            }
         }
         .preferredColorScheme(.dark)
+        .onChange(of: store.showMonthEndPayoutAnimation) { _, show in
+            animateMonthEndPayout = false
+            guard show else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(140))
+                animateMonthEndPayout = true
+            }
+        }
+    }
+
+    private var payoutPartners: [Partner] {
+        let selected = Array(store.selectedPartners.prefix(3))
+        return selected.isEmpty ? Array(store.partners.prefix(3)) : selected
     }
 }
 
@@ -245,15 +332,15 @@ struct WelcomeScreen: View {
             Spacer()
             Image(systemName: "shield.lefthalf.filled.badge.checkmark")
                 .font(.system(size: 58))
-                .foregroundStyle(CommitTheme.accentCyan)
-                .shadow(color: CommitTheme.accentBlue.opacity(0.8), radius: 14)
+                .foregroundStyle(KommitTheme.accentCyan)
+                .shadow(color: KommitTheme.accentBlue.opacity(0.8), radius: 14)
 
             Text("Spend with intention.")
                 .font(.system(size: 38, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
 
-            Text("Commit helps you pause before impulse purchases and turn better habits into savings.")
+            Text("Kommit helps you pause before impulse purchases and turn better habits into savings.")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.white.opacity(0.75))
                 .multilineTextAlignment(.center)
@@ -305,12 +392,108 @@ struct OnboardingScreen: View {
                 }
 
                 PrimaryButton(title: "Continue") {
-                    store.next()
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                        store.step = .initialReflection
+                    }
                 }
                 .padding(.top, 8)
             }
             .padding(20)
         }
+    }
+
+}
+
+struct InitialReflectionScreen: View {
+    @ObservedObject var store: DemoStore
+    @State private var canUseCamera = false
+    @StateObject private var cameraModel = CameraSessionModel(preferredPosition: .front)
+    @State private var isRecording = false
+    @State private var recordingSeconds = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Initial Reflection")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            Text("Record a quick portrait video about your spending goals for this month.")
+                .foregroundStyle(.white.opacity(0.8))
+
+            ZStack(alignment: .topTrailing) {
+                Group {
+                    if canUseCamera {
+                        CameraPreviewView(model: cameraModel)
+                    } else {
+                        MockCameraView()
+                    }
+                }
+                .frame(height: 420)
+                .clipShape(RoundedRectangle(cornerRadius: 22))
+                .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.15), lineWidth: 1))
+
+                Text(timeString(recordingSeconds))
+                    .font(.caption.monospacedDigit())
+                    .padding(8)
+                    .background(.black.opacity(0.45))
+                    .clipShape(Capsule())
+                    .padding(10)
+
+                if canUseCamera {
+                    Button {
+                        cameraModel.flipCamera()
+                    } label: {
+                        Image(systemName: "camera.rotate.fill")
+                            .foregroundStyle(.white)
+                            .padding(10)
+                            .background(.black.opacity(0.45))
+                            .clipShape(Circle())
+                    }
+                    .padding(.top, 44)
+                    .padding(.trailing, 10)
+                }
+            }
+
+            HStack(spacing: 16) {
+                Button {
+                    if isRecording {
+                        isRecording = false
+                    } else {
+                        isRecording = true
+                        recordingSeconds = 0
+                        Task {
+                            while isRecording {
+                                try? await Task.sleep(for: .seconds(1))
+                                recordingSeconds += 1
+                                if recordingSeconds >= 10 { isRecording = false }
+                            }
+                        }
+                    }
+                } label: {
+                    Circle()
+                        .fill(isRecording ? KommitTheme.danger : .white)
+                        .frame(width: 70, height: 70)
+                        .overlay(Circle().stroke(KommitTheme.danger, lineWidth: 5).scaleEffect(isRecording ? 1.15 : 1))
+                }
+
+                PrimaryButton(title: "Continue to Partners") {
+                    isRecording = false
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                        store.step = .partners
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .task {
+            canUseCamera = await CameraAvailabilityChecker.canUseCamera
+        }
+    }
+
+    private func timeString(_ seconds: Int) -> String {
+        String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -336,7 +519,32 @@ struct BudgetSetupScreen: View {
                             Text("$\(Int(category.spent)) / $\(Int(category.limit))")
                                 .foregroundStyle(.white.opacity(0.8))
                         }
-                        ProgressBar(progress: category.progress, tint: category.name == "Shopping" ? CommitTheme.warning : CommitTheme.accentBlue)
+                        ProgressBar(progress: category.progress, tint: category.name == "Shopping" ? KommitTheme.warning : KommitTheme.accentBlue)
+                    }
+                }
+            }
+
+            GlassCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Alert limits for this budget")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text("Set notifications after connecting your account so you get warned before overspending.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.75))
+                    HStack {
+                        ForEach([25, 50, 75, 90], id: \.self) { threshold in
+                            PillButton(
+                                title: "\(threshold)%",
+                                isSelected: store.selectedAlertThresholds.contains(threshold)
+                            ) {
+                                if store.selectedAlertThresholds.contains(threshold) {
+                                    store.selectedAlertThresholds.remove(threshold)
+                                } else {
+                                    store.selectedAlertThresholds.insert(threshold)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -344,7 +552,9 @@ struct BudgetSetupScreen: View {
             Spacer()
 
             PrimaryButton(title: "Looks good") {
-                store.next()
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                    store.step = .home
+                }
             }
         }
         .padding(20)
@@ -376,13 +586,14 @@ struct PartnersScreen: View {
 
             GlassCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Social tax: \(Int(store.socialTaxPercent))%")
+                    Text("Social tax pool: $30")
                         .foregroundStyle(.white)
-                    Slider(value: $store.socialTaxPercent, in: 1...5, step: 1)
-                        .tint(CommitTheme.accentBlue)
-                    Text("If you override a denied request, this percentage goes to your accountability partner.")
+                    Text("Fixed social tax for this demo. If you miss your monthly goal, this pool is split among selected partners.")
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.7))
+                    Text("Current split: $\(store.perPartnerPayout, specifier: "%.2f") per partner")
+                        .font(.footnote)
+                        .foregroundStyle(KommitTheme.accentCyan)
                 }
             }
 
@@ -393,7 +604,9 @@ struct PartnersScreen: View {
                         store.selectedPartners.insert(first)
                     }
                 }
-                store.next()
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                    store.step = .plaid
+                }
             }
         }
         .padding(20)
@@ -403,8 +616,6 @@ struct PartnersScreen: View {
 struct MockPlaidScreen: View {
     @ObservedObject var store: DemoStore
 
-    private let accounts = ["Chase Checking ****2049", "Apple Card ****4556", "Cash App Card ****9912"]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect your spending account.")
@@ -413,8 +624,20 @@ struct MockPlaidScreen: View {
 
             GlassCard {
                 HStack(spacing: 10) {
-                    Image(systemName: "link.circle.fill")
-                        .foregroundStyle(CommitTheme.accentCyan)
+                    if UIImage(named: "Plaid_logo.svg") != nil {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.white)
+                            Image("Plaid_logo.svg")
+                                .resizable()
+                                .scaledToFit()
+                                .padding(4)
+                        }
+                        .frame(width: 30, height: 30)
+                    } else {
+                        Image(systemName: "link.circle.fill")
+                            .foregroundStyle(KommitTheme.accentCyan)
+                    }
                     Text("PLAID")
                         .font(.headline)
                         .foregroundStyle(.white)
@@ -422,12 +645,24 @@ struct MockPlaidScreen: View {
                 }
             }
 
-            ForEach(accounts, id: \ .self) { account in
+            ForEach(store.accounts) { account in
                 GlassCard {
                     HStack {
-                        Image(systemName: "creditcard.fill")
-                            .foregroundStyle(CommitTheme.accentBlue)
-                        Text(account)
+                        if let imageName = account.imageName, UIImage(named: imageName) != nil {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(.white)
+                                Image(imageName)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(3)
+                            }
+                            .frame(width: 28, height: 28)
+                        } else {
+                            Image(systemName: "creditcard.fill")
+                                .foregroundStyle(KommitTheme.accentBlue)
+                        }
+                        Text(account.name)
                             .foregroundStyle(.white)
                         Spacer()
                     }
@@ -443,7 +678,7 @@ struct MockPlaidScreen: View {
                         ForEach(store.plaidProgress, id: \ .self) { step in
                             HStack {
                                 Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(CommitTheme.success)
+                                    .foregroundStyle(KommitTheme.success)
                                 Text(step)
                                     .foregroundStyle(.white.opacity(0.9))
                             }
@@ -477,12 +712,12 @@ struct HomeDashboardScreen: View {
                             .foregroundStyle(.white)
                         HStack {
                             Text("Safe to spend: $186")
-                                .foregroundStyle(CommitTheme.success)
+                                .foregroundStyle(KommitTheme.success)
                             Spacer()
                             Text("$967 / $1,320 spent")
                                 .foregroundStyle(.white.opacity(0.75))
                         }
-                        ProgressBar(progress: 967 / 1320, tint: CommitTheme.accentBlue)
+                        ProgressBar(progress: 967 / 1320, tint: KommitTheme.accentBlue)
                     }
                 }
 
@@ -495,7 +730,7 @@ struct HomeDashboardScreen: View {
                                         .foregroundStyle(.white)
                                     Text("$\(Int(category.spent)) / $\(Int(category.limit))")
                                         .foregroundStyle(.white.opacity(0.75))
-                                    ProgressBar(progress: category.progress, tint: category.name == "Shopping" ? CommitTheme.warning : CommitTheme.accentBlue)
+                                    ProgressBar(progress: category.progress, tint: category.name == "Shopping" ? KommitTheme.warning : KommitTheme.accentBlue)
                                 }
                                 .frame(width: 180)
                             }
@@ -516,8 +751,26 @@ struct HomeDashboardScreen: View {
                 }
 
                 GlassCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Social Tax Pool")
+                            .foregroundStyle(.white)
+                            .font(.headline)
+                        Text("$\(store.socialTaxPool, specifier: "%.2f") fixed monthly pool")
+                            .foregroundStyle(KommitTheme.warning)
+                        Text("Only pays out at month-end if you're over your monthly Shopping budget.")
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.72))
+                        Text("Current split: $\(store.perPartnerPayout, specifier: "%.2f") per selected partner")
+                            .foregroundStyle(KommitTheme.accentCyan)
+                        Text("Trigger payout using “Fake Missed Goal Notification”.")
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.65))
+                    }
+                }
+
+                GlassCard {
                     Text("$120.12 earned through better choices")
-                        .foregroundStyle(CommitTheme.success)
+                        .foregroundStyle(KommitTheme.success)
                         .font(.headline)
                 }
 
@@ -530,9 +783,13 @@ struct HomeDashboardScreen: View {
                     }
                 }
 
-                PrimaryButton(title: "Simulate Purchase") {
+                PrimaryButton(title: "Trigger Last Alert Flow") {
                     store.step = .purchaseAlert
                     UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                }
+
+                PrimaryButton(title: "Fake Missed Goal Notification") {
+                    store.triggerMissedBudgetGoalNotification()
                 }
 
                 DemoTabBar()
@@ -554,18 +811,23 @@ struct PurchaseAlertScreen: View {
 
             GlassCard {
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Last limit notification")
+                        .foregroundStyle(KommitTheme.warning)
+                    Text("Triggered at your \(store.lastAlertThreshold)% budget alert.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.78))
                     Text("Merchant: Nike")
                     Text("Amount: $89.99")
                     Text("Category: Shopping")
                     Text("Current spend: $295 / $300")
                     Text("New total: $384.99 / $300")
                     Text("Over budget by: $84.99")
-                        .foregroundStyle(CommitTheme.danger)
+                        .foregroundStyle(KommitTheme.danger)
                 }
                 .foregroundStyle(.white)
             }
 
-            PrimaryButton(title: "Record why I need this") {
+            PrimaryButton(title: "Record video for partners") {
                 store.next()
             }
 
@@ -583,6 +845,7 @@ struct PurchaseAlertScreen: View {
 struct VideoJustificationScreen: View {
     @ObservedObject var store: DemoStore
     @State private var useRealCamera = false
+    @StateObject private var cameraModel = CameraSessionModel(preferredPosition: .front)
 
     private let chips = ["Want", "Need", "Stress", "Excited", "Bored", "Treat myself"]
 
@@ -595,12 +858,12 @@ struct VideoJustificationScreen: View {
             ZStack(alignment: .topTrailing) {
                 Group {
                     if useRealCamera {
-                        CameraPreviewView()
+                        CameraPreviewView(model: cameraModel)
                     } else {
                         MockCameraView()
                     }
                 }
-                .frame(height: 300)
+                .frame(height: 420)
                 .clipShape(RoundedRectangle(cornerRadius: 22))
                 .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.15), lineWidth: 1))
 
@@ -610,6 +873,21 @@ struct VideoJustificationScreen: View {
                     .background(.black.opacity(0.4))
                     .clipShape(Capsule())
                     .padding(10)
+
+                if useRealCamera {
+                    Button {
+                        cameraModel.flipCamera()
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Image(systemName: "camera.rotate.fill")
+                            .foregroundStyle(.white)
+                            .padding(10)
+                            .background(.black.opacity(0.45))
+                            .clipShape(Circle())
+                    }
+                    .padding(.top, 46)
+                    .padding(.trailing, 10)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -628,10 +906,10 @@ struct VideoJustificationScreen: View {
                     store.isRecording ? store.stopRecording() : store.startRecording()
                 } label: {
                     Circle()
-                        .fill(store.isRecording ? CommitTheme.danger : .white)
+                        .fill(store.isRecording ? KommitTheme.danger : .white)
                         .frame(width: 70, height: 70)
-                        .overlay(Circle().stroke(CommitTheme.danger, lineWidth: 5).scaleEffect(store.isRecording ? 1.15 : 1))
-                        .shadow(color: CommitTheme.danger.opacity(0.7), radius: 16)
+                        .overlay(Circle().stroke(KommitTheme.danger, lineWidth: 5).scaleEffect(store.isRecording ? 1.15 : 1))
+                        .shadow(color: KommitTheme.danger.opacity(0.7), radius: 16)
                         .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: store.isRecording)
                 }
 
@@ -671,7 +949,7 @@ struct AIReviewScreen: View {
                     ForEach(store.aiProgress, id: \ .self) { item in
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(CommitTheme.success)
+                                .foregroundStyle(KommitTheme.success)
                             Text(item)
                                 .foregroundStyle(.white)
                         }
@@ -683,7 +961,7 @@ struct AIReviewScreen: View {
                 GlassCard {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Recommendation: Wait 24 hours")
-                            .foregroundStyle(CommitTheme.warning)
+                            .foregroundStyle(KommitTheme.warning)
                             .font(.headline)
                         Text("You are $84.99 over your Shopping budget. This looks like a want, not an urgent need.")
                             .foregroundStyle(.white.opacity(0.85))
@@ -710,6 +988,12 @@ struct AIReviewScreen: View {
 struct PartnerDecisionScreen: View {
     @ObservedObject var store: DemoStore
     @State private var decided = false
+    @State private var reactionLabel = ""
+    @State private var includeResponseVideo = false
+    @State private var partnerRecording = false
+    @State private var partnerRecordingSeconds = 0
+    @State private var canUseCamera = false
+    @StateObject private var cameraModel = CameraSessionModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -718,8 +1002,75 @@ struct PartnerDecisionScreen: View {
                 .foregroundStyle(.white)
 
             GlassCard {
-                Text("Do you really need this today, or can we wait until next paycheck?")
+                Text("React to this transaction and leave feedback for your friend.")
                     .foregroundStyle(.white)
+            }
+
+            GlassCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Attach response video with vote", isOn: $includeResponseVideo)
+                        .tint(KommitTheme.accentBlue)
+                        .foregroundStyle(.white)
+
+                    if includeResponseVideo {
+                        ZStack(alignment: .topTrailing) {
+                            Group {
+                                if canUseCamera {
+                                    CameraPreviewView(model: cameraModel)
+                                } else {
+                                    MockCameraView()
+                                }
+                            }
+                                .frame(height: 420)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                            Text(timeString(partnerRecordingSeconds))
+                                .font(.caption.monospacedDigit())
+                                .padding(8)
+                                .background(.black.opacity(0.45))
+                                .clipShape(Capsule())
+                                .padding(8)
+
+                            if canUseCamera {
+                                Button {
+                                    cameraModel.flipCamera()
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                } label: {
+                                    Image(systemName: "camera.rotate.fill")
+                                        .foregroundStyle(.white)
+                                        .padding(8)
+                                        .background(.black.opacity(0.45))
+                                        .clipShape(Circle())
+                                }
+                                .padding(.top, 42)
+                                .padding(.trailing, 8)
+                            }
+                        }
+
+                        Button {
+                            if partnerRecording {
+                                partnerRecording = false
+                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            } else {
+                                partnerRecording = true
+                                partnerRecordingSeconds = 0
+                                UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                                Task {
+                                    while partnerRecording {
+                                        try? await Task.sleep(for: .seconds(1))
+                                        partnerRecordingSeconds += 1
+                                        if partnerRecordingSeconds >= 8 {
+                                            partnerRecording = false
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label(partnerRecording ? "Stop Response Video" : "Record Response Video", systemImage: partnerRecording ? "stop.circle.fill" : "record.circle")
+                                .foregroundStyle(.white)
+                        }
+                    }
+                }
             }
 
             GlassCard {
@@ -732,25 +1083,27 @@ struct PartnerDecisionScreen: View {
             }
 
             HStack {
-                Button("Approved") {
+                Button("Thumbs Up") {
                     decided = true
+                    reactionLabel = "Maya reacted: 👍 Good purchase"
                 }
                 .buttonStyle(.bordered)
 
-                Button("Denied") {
+                Button("Not a good purchase") {
                     decided = true
+                    reactionLabel = "Maya reacted: 👎 Not a good purchase"
                     UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(CommitTheme.danger)
+                .tint(KommitTheme.danger)
             }
 
             if decided {
                 GlassCard {
-                    Text("Maya voted: Deny")
-                        .foregroundStyle(CommitTheme.danger)
+                    Text(reactionLabel)
+                        .foregroundStyle(KommitTheme.warning)
                 }
-                PrimaryButton(title: "Choose what to do") {
+                PrimaryButton(title: "View video responses") {
                     store.next()
                 }
             }
@@ -758,48 +1111,112 @@ struct PartnerDecisionScreen: View {
             Spacer()
         }
         .padding(20)
+        .task {
+            canUseCamera = await CameraAvailabilityChecker.canUseCamera
+        }
+    }
+
+    private func timeString(_ seconds: Int) -> String {
+        let min = seconds / 60
+        let sec = seconds % 60
+        return String(format: "%02d:%02d", min, sec)
     }
 }
 
 struct SaveOverrideScreen: View {
     @ObservedObject var store: DemoStore
+    @State private var selectedResponder: Partner?
 
     var body: some View {
-        VStack(spacing: 14) {
-            GlassCard {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Save instead")
-                        .font(.title3.bold())
-                        .foregroundStyle(CommitTheme.success)
-                    Text("Move $89.99 to savings")
-                    Text("Keep streak")
-                    Text("Avoid social tax")
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Partner Video Responses")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
-            }
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(CommitTheme.success, lineWidth: 1.2))
-            .onTapGesture {
-                store.showSavedBanner()
-                store.next()
+            Text("Select a partner to watch their response video.")
+                .foregroundStyle(.white.opacity(0.8))
+
+            HStack(spacing: 12) {
+                ForEach(displayPartners, id: \.self) { partner in
+                    GlassCard {
+                        VStack(spacing: 8) {
+                            AvatarView(partner: partner, isSelected: selectedResponder == partner)
+                            Text(partner.name)
+                                .foregroundStyle(.white)
+                                .font(.caption)
+                            Image(systemName: "play.circle.fill")
+                                .foregroundStyle(KommitTheme.accentCyan)
+                                .font(.title2)
+                        }
+                    }
+                    .onTapGesture {
+                        selectedResponder = partner
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(800))
+                            store.backHome()
+                        }
+                    }
+                }
             }
 
             GlassCard {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Override purchase")
-                        .font(.title3.bold())
-                        .foregroundStyle(CommitTheme.warning)
-                    Text("Continue anyway")
-                    Text("Pay 3% social tax to Maya")
-                    Text("Social tax: $2.70")
-                    Text("Streak resets")
-                }
-                .foregroundStyle(.white)
+                Text("Partners can only react to your transaction. Payout happens only at month-end if you're over budget.")
+                    .foregroundStyle(.white.opacity(0.85))
             }
-
             Spacer()
         }
         .padding(20)
     }
+
+    private var displayPartners: [Partner] {
+        let selected = Array(store.selectedPartners.prefix(3))
+        return selected.isEmpty ? Array(store.partners.prefix(3)) : selected
+    }
+}
+
+struct PartnerMoneyFlightView: View {
+    let partners: [Partner]
+    let animate: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                HStack(spacing: 20) {
+                    ForEach(partners, id: \.self) { partner in
+                        AvatarView(partner: partner, isSelected: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                ForEach(0..<6, id: \.self) { index in
+                    Text("💸")
+                        .font(.system(size: 34))
+                        .position(
+                            x: animate ? targetX(for: index, width: geo.size.width, partnerCount: max(partners.count, 1)) : geo.size.width / 2,
+                            y: animate ? 34 : geo.size.height - 20
+                        )
+                        .opacity(animate ? 0.95 : 0.0)
+                        .animation(
+                            .easeInOut(duration: 0.85)
+                                .delay(Double(index) * 0.09),
+                            value: animate
+                        )
+                }
+            }
+        }
+    }
+
+    private func targetX(for index: Int, width: CGFloat, partnerCount: Int) -> CGFloat {
+        let slot = index % partnerCount
+        let spacing = width / CGFloat(partnerCount + 1)
+        return spacing * CGFloat(slot + 1)
+    }
+}
+
+enum OutcomeState {
+    case none
+    case saved
+    case override
 }
 
 struct EarnedSummaryScreen: View {
@@ -853,13 +1270,13 @@ struct GlassCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 20)
-                    .fill(LinearGradient(colors: [CommitTheme.cardPrimary.opacity(0.92), CommitTheme.cardSecondary.opacity(0.86)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(LinearGradient(colors: [KommitTheme.cardPrimary.opacity(0.92), KommitTheme.cardSecondary.opacity(0.86)], startPoint: .topLeading, endPoint: .bottomTrailing))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             )
-            .shadow(color: CommitTheme.accentBlue.opacity(0.12), radius: 12, y: 8)
+            .shadow(color: KommitTheme.accentBlue.opacity(0.12), radius: 12, y: 8)
     }
 }
 
@@ -875,11 +1292,11 @@ struct PrimaryButton: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .background(
-                    LinearGradient(colors: [CommitTheme.accentBlue, CommitTheme.accentCyan], startPoint: .leading, endPoint: .trailing)
+                    LinearGradient(colors: [KommitTheme.accentBlue, KommitTheme.accentCyan], startPoint: .leading, endPoint: .trailing)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14))
         }
-        .shadow(color: CommitTheme.accentBlue.opacity(0.5), radius: 10)
+        .shadow(color: KommitTheme.accentBlue.opacity(0.5), radius: 10)
     }
 }
 
@@ -910,8 +1327,8 @@ struct PillButton: View {
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(isSelected ? CommitTheme.accentBlue.opacity(0.35) : .white.opacity(0.06))
-                .overlay(Capsule().stroke(isSelected ? CommitTheme.accentCyan : .white.opacity(0.15), lineWidth: 1))
+                .background(isSelected ? KommitTheme.accentBlue.opacity(0.35) : .white.opacity(0.06))
+                .overlay(Capsule().stroke(isSelected ? KommitTheme.accentCyan : .white.opacity(0.15), lineWidth: 1))
                 .clipShape(Capsule())
                 .foregroundStyle(.white)
         }
@@ -930,7 +1347,7 @@ struct AvatarView: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    Circle().fill(CommitTheme.cardSecondary)
+                    Circle().fill(KommitTheme.cardSecondary)
                     Text(partner.initials)
                         .font(.headline)
                         .foregroundStyle(.white)
@@ -938,11 +1355,11 @@ struct AvatarView: View {
             }
             .frame(width: 66, height: 66)
             .clipShape(Circle())
-            .overlay(Circle().stroke(isSelected ? CommitTheme.accentCyan : .white.opacity(0.18), lineWidth: 2))
+            .overlay(Circle().stroke(isSelected ? KommitTheme.accentCyan : .white.opacity(0.18), lineWidth: 2))
 
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(CommitTheme.success)
+                    .foregroundStyle(KommitTheme.success)
                     .background(Circle().fill(.black))
             }
         }
@@ -955,13 +1372,15 @@ struct BrandLogoView: View {
     var body: some View {
         VStack(spacing: 6) {
             ZStack {
-                Circle().fill(.white.opacity(0.08))
                 if let imageName = brand.imageName, UIImage(named: imageName) != nil {
+                    Circle()
+                        .fill(.white)
                     Image(imageName)
                         .resizable()
                         .scaledToFit()
                         .padding(10)
                 } else {
+                    Circle().fill(.white.opacity(0.08))
                     Image(systemName: brand.symbol)
                         .foregroundStyle(.white)
                 }
@@ -979,9 +1398,9 @@ struct AnimatedGradientBackground: View {
 
     var body: some View {
         ZStack {
-            CommitTheme.background
-            RadialGradient(colors: [CommitTheme.accentBlue.opacity(0.26), .clear], center: animate ? .topLeading : .bottomTrailing, startRadius: 80, endRadius: 500)
-            RadialGradient(colors: [CommitTheme.accentCyan.opacity(0.18), .clear], center: animate ? .bottomTrailing : .topLeading, startRadius: 70, endRadius: 460)
+            KommitTheme.background
+            RadialGradient(colors: [KommitTheme.accentBlue.opacity(0.26), .clear], center: animate ? .topLeading : .bottomTrailing, startRadius: 80, endRadius: 500)
+            RadialGradient(colors: [KommitTheme.accentCyan.opacity(0.18), .clear], center: animate ? .bottomTrailing : .topLeading, startRadius: 70, endRadius: 460)
         }
         .onAppear {
             withAnimation(.easeInOut(duration: 5).repeatForever(autoreverses: true)) {
@@ -1000,7 +1419,7 @@ struct DemoNotificationBanner: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 12).fill(CommitTheme.success.opacity(0.85)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(KommitTheme.success.opacity(0.85)))
     }
 }
 
@@ -1023,7 +1442,7 @@ struct DemoTabBar: View {
                             .font(.caption2)
                     }
                     .frame(maxWidth: .infinity)
-                    .foregroundStyle(tab.0 == "Home" ? CommitTheme.accentCyan : .white.opacity(0.7))
+                    .foregroundStyle(tab.0 == "Home" ? KommitTheme.accentCyan : .white.opacity(0.7))
                 }
             }
         }
@@ -1051,26 +1470,51 @@ actor CameraAvailabilityChecker {
 
 final class CameraSessionModel: ObservableObject {
     let session = AVCaptureSession()
+    private var currentInput: AVCaptureDeviceInput?
+    private var currentPosition: AVCaptureDevice.Position
 
-    init() {
+    init(preferredPosition: AVCaptureDevice.Position = .back) {
+        self.currentPosition = preferredPosition
         configure()
     }
 
     private func configure() {
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device) else { return }
+        guard let input = makeInput(for: currentPosition) else { return }
 
         session.beginConfiguration()
         if session.canAddInput(input) {
             session.addInput(input)
+            currentInput = input
         }
         session.commitConfiguration()
         session.startRunning()
     }
+
+    func flipCamera() {
+        let newPosition: AVCaptureDevice.Position = currentPosition == .back ? .front : .back
+        guard let newInput = makeInput(for: newPosition) else { return }
+        session.beginConfiguration()
+        if let currentInput {
+            session.removeInput(currentInput)
+        }
+        if session.canAddInput(newInput) {
+            session.addInput(newInput)
+            self.currentInput = newInput
+            currentPosition = newPosition
+        }
+        session.commitConfiguration()
+    }
+
+    private func makeInput(for position: AVCaptureDevice.Position) -> AVCaptureDeviceInput? {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
+            return nil
+        }
+        return try? AVCaptureDeviceInput(device: device)
+    }
 }
 
 struct CameraPreviewView: UIViewRepresentable {
-    @StateObject private var model = CameraSessionModel()
+    @ObservedObject var model: CameraSessionModel
 
     func makeUIView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
@@ -1090,7 +1534,7 @@ final class PreviewContainerView: UIView {
 struct MockCameraView: View {
     var body: some View {
         ZStack {
-            LinearGradient(colors: [CommitTheme.cardSecondary, CommitTheme.background], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [KommitTheme.cardSecondary, KommitTheme.background], startPoint: .top, endPoint: .bottom)
             VStack(spacing: 14) {
                 Image(systemName: "camera.aperture")
                     .font(.system(size: 50))
